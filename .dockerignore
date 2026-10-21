@@ -1,0 +1,14 @@
+.git
+node_modules
+.next
+coverage
+playwright-report
+test-results
+.env
+.env*.local
+supabase/.temp
+supabase/.branches
+evals/**/private
+pilot-samples
+*.log
+.DS_Store

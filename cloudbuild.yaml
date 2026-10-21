@@ -1,0 +1,57 @@
+# Cloud Build: test → build image → push → deploy a no-traffic "candidate" revision.
+# Run per environment (see docs/DEPLOY.md §5), e.g.:
+#   gcloud builds submit --region=asia-southeast1 --config=cloudbuild.yaml \
+#     --service-account=projects/$PROJECT_ID/serviceAccounts/workbench-deploy@$PROJECT_ID.iam.gserviceaccount.com \
+#     --substitutions=_ENV=staging,_SUPABASE_URL=https://<ref>.supabase.co,_SUPABASE_ANON_KEY=<anon key>
+# The first build only produces the image; create the service once by hand (DEPLOY.md §5.2).
+substitutions:
+  _ENV: staging
+  _REGION: asia-southeast1
+  _REPO: workbench
+  _SERVICE: workbench-${_ENV}
+  _SUPABASE_URL: ""
+  _SUPABASE_ANON_KEY: ""
+  _IMAGE: ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/workbench:${_ENV}-${BUILD_ID}
+
+options:
+  dynamicSubstitutions: true
+  logging: CLOUD_LOGGING_ONLY
+
+steps:
+  - id: test
+    name: node:24-slim
+    entrypoint: bash
+    args:
+      - -c
+      - corepack enable && pnpm install --frozen-lockfile && pnpm typecheck && pnpm test
+
+  - id: build
+    name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - --build-arg=NEXT_PUBLIC_SUPABASE_URL=${_SUPABASE_URL}
+      - --build-arg=NEXT_PUBLIC_SUPABASE_ANON_KEY=${_SUPABASE_ANON_KEY}
+      - -t=${_IMAGE}
+      - .
+
+  - id: push
+    name: gcr.io/cloud-builders/docker
+    args: [push, "${_IMAGE}"]
+
+  # Existing service: new revision with 0% traffic, reachable at the "candidate" tag URL.
+  # Service settings (env, secrets, scaling) carry over from the current revision.
+  - id: deploy
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        if gcloud run services describe ${_SERVICE} --region=${_REGION} >/dev/null 2>&1; then
+          gcloud run deploy ${_SERVICE} --image=${_IMAGE} --region=${_REGION} --no-traffic --tag=candidate
+        else
+          echo "Service ${_SERVICE} does not exist yet. Image pushed: ${_IMAGE}"
+          echo "Create the service once by hand (docs/DEPLOY.md §5.2), then re-run this build."
+        fi
+
+images:
+  - ${_IMAGE}
